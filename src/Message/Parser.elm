@@ -113,14 +113,14 @@ betweenParens =
 
 singleLineRemainder : Parser String
 singleLineRemainder =
-    getChompedString (chompWhile (\_ -> True))
-        |> andThen
-            (\chunk ->
-                oneOf
-                    [ symbol "\n" |> map (\_ -> chunk)
-                    , end |> map (\_ -> chunk)
-                    ]
-            )
+    oneOf
+        [ succeed identity
+            |= getChompedString (chompWhile (\c -> c /= '\n'))
+            |. symbol "\n"
+        , succeed identity
+            |= getChompedString (chompWhile (\_ -> True))
+            |. end
+        ]
 
 
 lineRemainderP : Parser String
@@ -134,9 +134,23 @@ lineRemainderP =
 collectLineRemainders : List String -> Parser (Step (List String) (List String))
 collectLineRemainders acc =
     oneOf
-        [ succeed (\line -> Loop (line :: acc))
-            |. chompWhile isWhitespace
-            |= singleLineRemainder
+        [ succeed (Done (List.reverse acc))
+            |. end
+        , succeed identity
+            |= getChompedString (chompWhile isWhitespace)
+            |> andThen
+                (\whitespace ->
+                    if String.isEmpty whitespace then
+                        -- No whitespace means no continuation line - stop without consuming
+                        succeed (Done (List.reverse acc))
+
+                    else
+                        -- Has whitespace, so it's a continuation line
+                        succeed identity
+                            |= getChompedString (chompWhile (\c -> c /= '\n'))
+                            |. symbol "\n"
+                            |> map (\line -> Loop (line :: acc))
+                )
         , succeed (Done (List.reverse acc))
         ]
 
@@ -146,7 +160,8 @@ dateP =
     succeed identity
         |. symbol "Date: "
         |= Imf.DateTime.parser
-        |. lineRemainderP
+        |. takeWhile (\c -> c /= '\n')
+        |. symbol "\n"
 
 
 
@@ -219,7 +234,15 @@ nextPartLoop _ =
     oneOf
         [ lookAheadHeaderP |> map (\_ -> Done ())
         , end |> map (\_ -> Done ())
-        , getChompedString (chompWhile (\_ -> True)) |> map (\_ -> Loop ())
+        , getChompedString (chompWhile (\c -> c /= '\n'))
+            |> andThen
+                (\_ ->
+                    oneOf
+                        [ symbol "\n" |> map (\_ -> Loop ())
+                        , end |> map (\_ -> Done ())
+                        , problem "nextPartLoop: unexpected state"
+                        ]
+                )
         ]
 
 
@@ -246,7 +269,7 @@ contentParserLoop acc =
         , succeed (Done (List.reverse acc))
             |. backtrackable (symbol "-------------- next part --------------")
         , succeed (\chunk -> Loop (chunk :: acc))
-            |= (getChompedString (chompWhile (\_ -> True))
+            |= (getChompedString (chompWhile (\c -> c /= '\n'))
                     |> andThen
                         (\line ->
                             oneOf
