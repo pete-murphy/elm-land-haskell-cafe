@@ -22,6 +22,8 @@
     "router": {
       "useHashRouting": false
     },
-    "proxy": null
+    "proxy": {
+      "/haskell-cafe": "https://mail.haskell.org/pipermail"
+    }
   }
 }
