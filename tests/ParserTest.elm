@@ -3,7 +3,6 @@ module ParserTest exposing (..)
 import Expect
 import Message.Parser
 import Test exposing (Test)
-import Time exposing (Posix)
 
 
 test : Test
@@ -12,19 +11,10 @@ test =
         [ Test.test "parse sample" <|
             \_ ->
                 Message.Parser.run sample
-                    |> Expect.equal
-                        (Ok
-                            { content = ""
-                            , subject = ""
-                            , messageId = ""
-                            , inReplyTo = Nothing
-                            , references = Nothing
-                            , author = ""
-                            , date =
-                                Time.millisToPosix
-                                    0
-                            }
-                        )
+                    |> Expect.all
+                        [ Expect.ok
+                        , Result.map List.length >> Expect.equal (Ok 10)
+                        ]
         ]
 
 

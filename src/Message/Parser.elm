@@ -28,9 +28,33 @@ import Parser
 import Time exposing (Posix)
 
 
-run : String -> Result (List Parser.DeadEnd) Message
+run : String -> Result (List Parser.DeadEnd) (List Message)
 run =
-    Parser.run messageP
+    Parser.run messagesP
+
+
+messagesP : Parser (List Message)
+messagesP =
+    loop [] collectMessages
+
+
+collectMessages : List Message -> Parser (Step (List Message) (List Message))
+collectMessages acc =
+    oneOf
+        [ succeed identity
+            |= messageP
+            |> andThen
+                (\msg ->
+                    oneOf
+                        [ succeed (Done (List.reverse (msg :: acc)))
+                            |. end
+                        , succeed (Loop (msg :: acc))
+                        ]
+                )
+        , succeed (Done (List.reverse acc))
+            |. chompWhile (\c -> c == ' ' || c == '\n' || c == '\t' || c == '\u{000D}')
+            |. end
+        ]
 
 
 
@@ -41,9 +65,9 @@ type alias Header =
     { author : String
     , date : Posix
     , subject : String
-    , messageId : String
     , inReplyTo : Maybe String
     , references : Maybe String
+    , messageId : String
     }
 
 
@@ -51,9 +75,9 @@ type alias Message =
     { content : String
     , author : String
     , subject : String
-    , messageId : String
     , inReplyTo : Maybe String
     , references : Maybe String
+    , messageId : String
     , date : Posix
     }
 
@@ -218,8 +242,7 @@ messageIdP =
 lookAheadHeaderP : Parser ()
 lookAheadHeaderP =
     -- Look ahead to see if there's a header starting
-    succeed ()
-        |. backtrackable (symbol "From")
+    backtrackable (symbol "From")
 
 
 nextPartP : Parser ()
@@ -232,17 +255,36 @@ nextPartP =
 nextPartLoop : () -> Parser (Step () ())
 nextPartLoop _ =
     oneOf
-        [ lookAheadHeaderP |> map (\_ -> Done ())
-        , end |> map (\_ -> Done ())
-        , getChompedString (chompWhile (\c -> c /= '\n'))
+        [ end |> map (\_ -> Done ())
+        , backtrackable
+            (getChompedString (chompWhile (\c -> c /= '\n'))
+                |> andThen
+                    (\line ->
+                        -- Check if this line starts with "From" (new message)
+                        if String.startsWith "From" line then
+                            -- Found new message, backtrack and stop
+                            problem "Found new message"
+
+                        else
+                            -- Not a "From" line, this is valid content to consume
+                            succeed line
+                    )
+                |> andThen
+                    (\line ->
+                        -- Consume the newline or end
+                        oneOf
+                            [ symbol "\n" |> map (\_ -> Loop ())
+                            , end |> map (\_ -> Done ())
+                            , problem "nextPartLoop: unexpected state"
+                            ]
+                    )
+            )
             |> andThen
-                (\_ ->
-                    oneOf
-                        [ symbol "\n" |> map (\_ -> Loop ())
-                        , end |> map (\_ -> Done ())
-                        , problem "nextPartLoop: unexpected state"
-                        ]
+                (\step ->
+                    -- If we get here, backtrackable succeeded, so we consumed a line
+                    succeed step
                 )
+        , succeed (Done ())
         ]
 
 
@@ -263,21 +305,42 @@ contentParserLoop : List String -> Parser (Step (List String) (List String))
 contentParserLoop acc =
     oneOf
         [ succeed (Done (List.reverse acc))
-            |. lookAheadHeaderP
-        , succeed (Done (List.reverse acc))
             |. end
+        , backtrackable
+            (symbol "-------------- next part --------------"
+                |> andThen (\_ -> problem "Found next part separator")
+            )
+            |> andThen (\_ -> succeed (Done (List.reverse acc)))
+        , backtrackable
+            (getChompedString (chompWhile (\c -> c /= '\n'))
+                |> andThen
+                    (\line ->
+                        -- Check if this line starts with "From" (new message)
+                        if String.startsWith "From" line then
+                            -- This is the start of a new message, backtrack and stop
+                            problem "Found new message"
+
+                        else
+                            -- Not a "From" line, this is valid content
+                            succeed line
+                    )
+                |> andThen
+                    (\line ->
+                        -- Consume the newline or end
+                        oneOf
+                            [ symbol "\n"
+                                |> map (\_ -> Loop ((line ++ "\n") :: acc))
+                            , end
+                                |> map (\_ -> Done (List.reverse (line :: acc)))
+                            ]
+                    )
+            )
+            |> andThen
+                (\step ->
+                    -- If we get here, backtrackable succeeded, so we consumed a line
+                    succeed step
+                )
         , succeed (Done (List.reverse acc))
-            |. backtrackable (symbol "-------------- next part --------------")
-        , succeed (\chunk -> Loop (chunk :: acc))
-            |= (getChompedString (chompWhile (\c -> c /= '\n'))
-                    |> andThen
-                        (\line ->
-                            oneOf
-                                [ symbol "\n" |> map (\_ -> line ++ "\n")
-                                , end |> map (\_ -> line)
-                                ]
-                        )
-               )
         ]
 
 
@@ -288,7 +351,6 @@ headerP =
         |= authorP
         |= dateP
         |= subjectP
-        |= messageIdP
         |= oneOf
             [ inReplyToP |> map Just
             , succeed Nothing
@@ -297,6 +359,7 @@ headerP =
             [ referencesP |> map Just
             , succeed Nothing
             ]
+        |= messageIdP
 
 
 messageP : Parser Message
@@ -322,9 +385,9 @@ createMessage header content =
     { content = processedContent
     , author = header.author
     , subject = header.subject
-    , messageId = header.messageId
     , inReplyTo = header.inReplyTo
     , references = header.references
+    , messageId = header.messageId
     , date = header.date
     }
 
