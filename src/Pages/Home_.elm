@@ -49,20 +49,32 @@ init () =
             , expect =
                 Http.expectString
                     (Result.mapError HttpError
-                        >> Result.map
-                            (String.lines
-                                >> List.drop 1
-                                >> List.append [ "<!DOCTYPE html>" ]
-                                >> String.join "\n"
-                            )
-                        >> Result.andThen
-                            (\str ->
-                                Html.Parser.runDocument Html.Parser.noCharRefs str
-                                    |> Result.mapError (HtmlParseError str)
-                            )
+                        >> Result.andThen parseHtml4Document
                         >> Result.andThen
                             (\doc ->
-                                case findLinks doc of
+                                let
+                                    res =
+                                        doc
+                                            |> findLinksMatching
+                                                (\{ attributes, children } ->
+                                                    case children of
+                                                        [ Html.Parser.Text "[ Date ]" ] ->
+                                                            attributes
+                                                                |> List.filterMap
+                                                                    (\( name, value ) ->
+                                                                        if name == "href" then
+                                                                            Just value
+
+                                                                        else
+                                                                            Nothing
+                                                                    )
+                                                                |> List.head
+
+                                                        _ ->
+                                                            Nothing
+                                                )
+                                in
+                                case res of
                                     [] ->
                                         Result.Err FailedToFindLinks
 
@@ -76,8 +88,11 @@ init () =
     )
 
 
-findLinks : Html.Parser.Document -> List String
-findLinks parserDocument =
+findLinksMatching :
+    ({ attributes : List ( String, String ), children : List Html.Parser.Node } -> Maybe x)
+    -> Html.Parser.Document
+    -> List x
+findLinksMatching f parserDocument =
     let
         go acc nodes =
             case nodes of
@@ -87,29 +102,11 @@ findLinks parserDocument =
                 node :: rest ->
                     case node of
                         Html.Parser.Element "a" attributes children ->
-                            case children of
-                                [ Html.Parser.Text "[ Date ]" ] ->
-                                    let
-                                        maybeHref =
-                                            attributes
-                                                |> List.filterMap
-                                                    (\( name, value ) ->
-                                                        if name == "href" then
-                                                            Just value
+                            case f { attributes = attributes, children = children } of
+                                Just href ->
+                                    go (href :: acc) rest
 
-                                                        else
-                                                            Nothing
-                                                    )
-                                                |> List.head
-                                    in
-                                    case maybeHref of
-                                        Just href ->
-                                            go (href :: acc) rest
-
-                                        Nothing ->
-                                            go acc rest
-
-                                _ ->
+                                Nothing ->
                                     go acc rest
 
                         Html.Parser.Element _ _ children ->
@@ -135,6 +132,19 @@ type Msg
     | NoOp
 
 
+parseHtml4Document : String -> Result Problem Html.Parser.Document
+parseHtml4Document html4 =
+    let
+        str =
+            String.lines html4
+                |> List.drop 1
+                |> List.append [ "<!DOCTYPE html>" ]
+                |> String.join "\n"
+    in
+    Html.Parser.runDocument Html.Parser.noCharRefs str
+        |> Result.mapError (HtmlParseError str)
+
+
 update : Msg -> Model -> ( Model, Effect Msg )
 update msg model =
     case msg of
@@ -157,18 +167,7 @@ update msg model =
                                         , expect =
                                             Http.expectString
                                                 (Result.mapError HttpError
-                                                    >> Result.map
-                                                        (String.lines
-                                                            >> Debug.log "lines"
-                                                            >> List.drop 1
-                                                            >> List.append [ "<!DOCTYPE html>" ]
-                                                            >> String.join "\n"
-                                                        )
-                                                    >> Result.andThen
-                                                        (\str ->
-                                                            Html.Parser.runDocument Html.Parser.noCharRefs str
-                                                                |> Result.mapError (HtmlParseError str)
-                                                        )
+                                                    >> Result.andThen parseHtml4Document
                                                     >> ServerRespondedWithPostsByMonth { href = link }
                                                 )
                                         }
@@ -264,7 +263,6 @@ errorToHtml src deadEnds =
         , newline = Html.br [] []
         }
         Parser.Error.forParser
-        -- or Parser.Error.forParserAdvanced
         src
         deadEnds
         |> Html.pre []
