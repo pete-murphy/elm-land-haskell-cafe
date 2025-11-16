@@ -13,8 +13,64 @@ test =
                 Message.Parser.run sample
                     |> Expect.all
                         [ Expect.ok
-                        , Result.map List.length >> Expect.equal (Ok 10)
+                        , Result.map List.length >> Expect.equal (Ok 14)
                         ]
+        , Test.test "parse all Message-IDs from sample" <|
+            \_ ->
+                let
+                    expectedMessageIds =
+                        [ "CAAmpXihPo=+pyBtQQqjNjGYYwR1yyiPjFaAuGNHui48E_K-2hg@mail.gmail.com"
+                        , "aI-1wAcOCYOFthbp@tauhou"
+                        , "CAJoPsuA0yVW1dnv+ue+qjogMBE65pmeYbB_FQ2KWtS0-xLkM9g@mail.gmail.com"
+                        , "C41ABEC2-35C6-4708-8445-26F1C00F1C1D@nothos.net"
+                        , "2pvhnbxa5lneok2e3ohskt3tcntqpoclxmptdk2qoquack5ovy@ofgaqxjmynll"
+                        , "CABjRk3mvPUyn2onK9bsmNmtgrrAOi=6nAwCizw9MD_JAN1vFBg@mail.gmail.com"
+                        , "CAEDhREoOthJ9W3N63qRc9vH_=xHmj8EbyfT-tBCZdkxQQfSpXA@mail.gmail.com"
+                        , "CAEDhRErB8gxrwt4gMiuaE0H8HA71KB9jNtpNKjktPx6wuwoS5w@mail.gmail.com"
+                        , "C08D6373-4F20-49FD-BED9-9FFE2BC99B40@mac.com"
+                        , "2F70BC4F-AB96-45F8-B644-A7B47749EDD1@mac.com"
+                        , "jc7mraxljldxz2xp7b6f57yfhimdxladjwjoyzxrykkqqejjsv@g2wojh42lusc"
+                        , "aJXxKmpCL519syLf@chardros.imrryr.org"
+                        , "ufsiejujiege6jwm5cxdzqiqsdzox2cwlzzbylc4ibrosnzgbq@ofh6vr5idhlk"
+                        , "DA73F8B8-1519-4657-9128-85D802541884@gmail.com"
+                        ]
+                in
+                Message.Parser.run sample
+                    |> Result.map
+                        (\messages ->
+                            Expect.all
+                                ((\_ -> List.length messages |> Expect.equal (List.length expectedMessageIds))
+                                    :: List.map2
+                                        (\expectedId message ->
+                                            \_ ->
+                                                message.messageId
+                                                    |> Expect.equal expectedId
+                                        )
+                                        expectedMessageIds
+                                        messages
+                                )
+                        )
+                    |> Result.map (\expectation -> expectation ())
+                    |> Result.withDefault (Expect.fail "Parser returned error")
+        , Test.test "all messages have required fields" <|
+            \_ ->
+                Message.Parser.run sample
+                    |> Result.map
+                        (\messages ->
+                            messages
+                                |> List.indexedMap
+                                    (\i message ->
+                                        Expect.all
+                                            [ \_ -> String.isEmpty message.messageId |> Expect.equal False |> Expect.onFail ("Message " ++ String.fromInt (i + 1) ++ " missing messageId")
+                                            , \_ -> String.isEmpty message.author |> Expect.equal False |> Expect.onFail ("Message " ++ String.fromInt (i + 1) ++ " missing author")
+                                            , \_ -> String.isEmpty message.subject |> Expect.equal False |> Expect.onFail ("Message " ++ String.fromInt (i + 1) ++ " missing subject")
+                                            ]
+                                    )
+                                |> List.map (\expectation -> expectation ())
+                                |> List.foldl (\e acc -> Expect.all [ \_ -> e, \_ -> acc () ]) (\_ -> Expect.pass)
+                        )
+                    |> Result.map (\expectation -> expectation ())
+                    |> Result.withDefault (Expect.fail "Parser returned error")
         ]
 
 

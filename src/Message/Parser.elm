@@ -237,6 +237,18 @@ messageIdP =
     succeed identity
         |. symbol "Message-ID: "
         |= lineRemainderP
+        |> map
+            (\id ->
+                id
+                    |> String.trim
+                    |> (\s ->
+                            if String.startsWith "<" s && String.endsWith ">" s then
+                                String.dropLeft 1 s |> String.dropRight 1
+
+                            else
+                                s
+                       )
+            )
 
 
 lookAheadHeaderP : Parser ()
@@ -260,13 +272,14 @@ nextPartLoop _ =
             (getChompedString (chompWhile (\c -> c /= '\n'))
                 |> andThen
                     (\line ->
-                        -- Check if this line starts with "From" (new message)
-                        if String.startsWith "From" line then
-                            -- Found new message, backtrack and stop
+                        -- Check if this line starts with "From " (preamble, not "From: ")
+                        -- This indicates the start of a new message
+                        if String.startsWith "From " line && not (String.startsWith "From: " line) then
+                            -- Found new message preamble, backtrack and stop
                             problem "Found new message"
 
                         else
-                            -- Not a "From" line, this is valid content to consume
+                            -- Not a "From " preamble line, this is valid content to consume
                             succeed line
                     )
                 |> andThen
@@ -275,15 +288,10 @@ nextPartLoop _ =
                         oneOf
                             [ symbol "\n" |> map (\_ -> Loop ())
                             , end |> map (\_ -> Done ())
-                            , problem "nextPartLoop: unexpected state"
                             ]
                     )
             )
-            |> andThen
-                (\step ->
-                    -- If we get here, backtrackable succeeded, so we consumed a line
-                    succeed step
-                )
+            |> map (\step -> step)
         , succeed (Done ())
         ]
 
@@ -315,13 +323,14 @@ contentParserLoop acc =
             (getChompedString (chompWhile (\c -> c /= '\n'))
                 |> andThen
                     (\line ->
-                        -- Check if this line starts with "From" (new message)
-                        if String.startsWith "From" line then
+                        -- Check if this line starts with "From " (preamble, not "From: ")
+                        -- This indicates the start of a new message
+                        if String.startsWith "From " line && not (String.startsWith "From: " line) then
                             -- This is the start of a new message, backtrack and stop
                             problem "Found new message"
 
                         else
-                            -- Not a "From" line, this is valid content
+                            -- Not a "From " preamble line, this is valid content
                             succeed line
                     )
                 |> andThen
@@ -381,15 +390,18 @@ createMessage header content =
                 |> cleanSignatureLines
                 |> List.reverse
                 |> String.join "\n"
+
+        message =
+            { content = processedContent
+            , author = header.author
+            , subject = header.subject
+            , inReplyTo = header.inReplyTo
+            , references = header.references
+            , messageId = header.messageId
+            , date = header.date
+            }
     in
-    { content = processedContent
-    , author = header.author
-    , subject = header.subject
-    , inReplyTo = header.inReplyTo
-    , references = header.references
-    , messageId = header.messageId
-    , date = header.date
-    }
+    message
 
 
 splitQuotedLines : List String -> ( List String, List String )
