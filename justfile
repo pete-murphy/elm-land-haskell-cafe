@@ -6,6 +6,12 @@
 @run:
     npx elm-land server
 
+@build:
+    npx elm-land build
+
+@test:
+    elm-test-rs
+
 @test-timeout TIMEOUT_SECONDS="90" *ARGS:
     # Run elm-test-rs with a timeout using Python (portable)
     python3 scripts/elm_test_timeout.py {{TIMEOUT_SECONDS}} {{ARGS}}

@@ -1,16 +1,24 @@
-# mailing-list-reader
-> Built with [Elm Land](https://elm.land) 🌈
+# elm-land-haskell-cafe
 
 ## Local development
 
+Run development server on `localhost:1234`
+
 ```bash
-# Requires Node.js v18+ (https://nodejs.org)
-npx elm-land server
+just run
 ```
 
-## Deploying to production
+Run tests
+```bash
+just test
+```
 
-Elm Land projects are most commonly deployed as static websites. 
+## References
 
-Please visit [the "Deployment" guide](https://elm.land/guide/deploying) to learn more
-about deploying your app for free using Netlify or Vercel.
+Elm Land docs: https://elm.land/
+
+Haskell Cafe archives: https://mail.haskell.org/pipermail/haskell/
+
+elm/parser library: https://package.elm-lang.org/packages/elm/parser/latest/
+
+PGLite: https://pglite.dev/

@@ -353,8 +353,46 @@ async function enqueueUpsert(app: ElmApp, file: string, index: number, items: Up
 
 async function upsertChunk(chunk: UpsertMessageItem[]): Promise<number> {
   const pg = getPGlite()
+  // Deduplicate by id within the chunk to avoid ON CONFLICT affecting the same row twice
+  // If duplicates exist, keep the last occurrence (later data wins).
+  const uniqueById = new Map<string, UpsertMessageItem>()
+  const duplicatePairs: Array<{ id: string, first: UpsertMessageItem, second: UpsertMessageItem }> = []
+  for (const item of chunk) {
+    const prev = uniqueById.get(item.id)
+    if (prev) {
+      duplicatePairs.push({ id: item.id, first: prev, second: item })
+    }
+    uniqueById.set(item.id, item)
+  }
+  if (duplicatePairs.length > 0) {
+    const sample = duplicatePairs.slice(0, 10).map(d => ({
+      id: d.id,
+      first: {
+        subject: d.first.subject,
+        fromAddr: d.first.fromAddr,
+        dateIso: d.first.dateIso,
+        inReplyTo: d.first.inReplyTo,
+        monthFile: d.first.monthFile
+      },
+      second: {
+        subject: d.second.subject,
+        fromAddr: d.second.fromAddr,
+        dateIso: d.second.dateIso,
+        inReplyTo: d.second.inReplyTo,
+        monthFile: d.second.monthFile
+      }
+    }))
+    const ids = Array.from(new Set(duplicatePairs.map(d => d.id)))
+    console.warn('[DB] Duplicate ids within upsert chunk', {
+      count: duplicatePairs.length,
+      uniqueIds: ids.length,
+      ids: ids.slice(0, 25),
+      sample
+    })
+  }
+  const uniqueItems = Array.from(uniqueById.values())
   // Parent path lookup for items that have inReplyTo
-  const parentIds = Array.from(new Set(chunk.map(i => i.inReplyTo).filter((x): x is string => !!x)))
+  const parentIds = Array.from(new Set(uniqueItems.map(i => i.inReplyTo).filter((x): x is string => !!x)))
   let parentPathById = new Map<string, string>()
   if (parentIds.length > 0) {
     const params = parentIds.map((_, idx) => `$${idx + 1}`).join(', ')
@@ -365,8 +403,8 @@ async function upsertChunk(chunk: UpsertMessageItem[]): Promise<number> {
   // Prepare multirow insert with ON CONFLICT
   const values: any[] = []
   const rowsSql: string[] = []
-  for (let i = 0; i < chunk.length; i++) {
-    const it = chunk[i]
+  for (let i = 0; i < uniqueItems.length; i++) {
+    const it = uniqueItems[i]
     const parentPath = it.inReplyTo ? (parentPathById.get(it.inReplyTo) ?? null) : null
     const path = computePath(parentPath, it.id)
     // to_tsvector computed in SQL from concatenated subject/content
@@ -402,7 +440,7 @@ async function upsertChunk(chunk: UpsertMessageItem[]): Promise<number> {
   await pg.query(sql, values)
   // Log insights after each chunk upsert
   void logDebugQueries()
-  return chunk.length
+  return uniqueItems.length
 }
 
 // -----------------------------------------------------------------------------
