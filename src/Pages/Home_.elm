@@ -1,4 +1,4 @@
-module Pages.Home_ exposing (Model, Msg, page)
+port module Pages.Home_ exposing (Model, Msg, page)
 
 import Dict exposing (Dict)
 import Effect exposing (Effect)
@@ -7,6 +7,7 @@ import Html.Attributes
 import Html.Parser
 import Http
 import Iso8601
+import Json.Decode
 import Json.Encode
 import Message.Parser
 import Page exposing (Page)
@@ -15,6 +16,16 @@ import Parser.Error
 import Route exposing (Route)
 import Shared
 import View exposing (View)
+
+
+
+-- Ports
+
+
+port toBackend : Json.Encode.Value -> Cmd msg
+
+
+port fromBackend : (Json.Decode.Value -> msg) -> Sub msg
 
 
 page : Shared.Model -> Route () -> Page Model Msg
@@ -32,9 +43,25 @@ page shared route =
 
 
 type alias Model =
-    { messages : Dict ( String, Int ) (Maybe (List Message.Parser.Message))
+    { files : Dict String FileStatus
     , problem : Maybe Problem
     }
+
+
+type alias FileStatus =
+    { state : FileState
+    , total : Int
+    , inserted : Int
+    }
+
+
+type FileState
+    = Queued
+    | Fetching
+    | Parsing
+    | Storing
+    | Done
+    | Error String
 
 
 type Problem
@@ -46,7 +73,7 @@ type Problem
 
 init : () -> ( Model, Effect Msg )
 init () =
-    ( { messages = Dict.empty, problem = Nothing }
+    ( { files = Dict.empty, problem = Nothing }
     , Effect.sendCmd
         (Http.get
             { url = "/haskell-cafe/index.html"
@@ -137,7 +164,17 @@ findLinksMatching f parserDocument =
 type Msg
     = ServerRespondedWithIndexPage (Result Problem (List String))
     | ServerRespondedWithTextFile { href : String, index : Int } (Result Problem (List Message.Parser.Message))
+    | BackendProgress ProgressMsg
     | NoOp
+
+
+type alias ProgressMsg =
+    { kind : String
+    , file : String
+    , inserted : Maybe Int
+    , total : Maybe Int
+    , error : Maybe String
+    }
 
 
 parseHtml4Document : String -> Result Problem Html.Parser.Document
@@ -160,10 +197,10 @@ update msg model =
             case response of
                 Result.Ok links ->
                     ( { model
-                        | messages =
+                        | files =
                             links
-                                |> List.indexedMap (\index href -> ( ( href, index ), Nothing ))
-                                |> Dict.fromList
+                                |> List.take 4
+                                |> List.foldl (\href acc -> Dict.insert href { state = Queued, total = 0, inserted = 0 } acc) Dict.empty
                       }
                     , links
                         |> List.take 4
@@ -194,17 +231,101 @@ update msg model =
         ServerRespondedWithTextFile { href, index } response ->
             case response of
                 Result.Ok messages ->
-                    ( { model | messages = Dict.insert ( href, index ) (Just messages) model.messages }
-                    , Effect.none
+                    let
+                        total =
+                            List.length messages
+
+                        payload =
+                            Json.Encode.object
+                                [ ( "type", Json.Encode.string "upsertMessages" )
+                                , ( "file", Json.Encode.string href )
+                                , ( "items", Json.Encode.list identity (List.map (encodeMessage href) messages) )
+                                ]
+                    in
+                    ( { model
+                        | files =
+                            Dict.update href
+                                (\_ -> Just { state = Storing, total = total, inserted = 0 })
+                                model.files
+                      }
+                    , Effect.sendCmd (toBackend payload)
                     )
 
                 Result.Err problem ->
-                    ( { model | problem = Just problem }, Effect.none )
+                    ( { model
+                        | files =
+                            Dict.update href
+                                (\_ -> Just { state = Error "parse", total = 0, inserted = 0 })
+                                model.files
+                        , problem = Just problem
+                      }
+                    , Effect.none
+                    )
 
         NoOp ->
             ( model
             , Effect.none
             )
+
+        BackendProgress pm ->
+            case pm.kind of
+                "progress" ->
+                    let
+                        inserted =
+                            Maybe.withDefault 0 pm.inserted
+
+                        total =
+                            Maybe.withDefault 0 pm.total
+                    in
+                    ( { model
+                        | files =
+                            Dict.update pm.file
+                                (\maybe ->
+                                    case maybe of
+                                        Just s ->
+                                            Just { s | state = Storing, inserted = inserted, total = max s.total total }
+
+                                        Nothing ->
+                                            Just { state = Storing, inserted = inserted, total = total }
+                                )
+                                model.files
+                      }
+                    , Effect.none
+                    )
+
+                "done" ->
+                    ( { model
+                        | files =
+                            Dict.update pm.file
+                                (\maybe ->
+                                    case maybe of
+                                        Just s ->
+                                            Just { s | state = Done }
+
+                                        Nothing ->
+                                            Just { state = Done, inserted = 0, total = 0 }
+                                )
+                                model.files
+                      }
+                    , Effect.none
+                    )
+
+                "error" ->
+                    ( { model
+                        | files =
+                            Dict.update pm.file
+                                (\_ -> Just { state = Error (Maybe.withDefault "unknown" pm.error), inserted = 0, total = 0 })
+                                model.files
+                      }
+                    , Effect.none
+                    )
+
+                "backpressure" ->
+                    -- For now, just keep UI as Storing; a future enhancement could pause fetches
+                    ( model, Effect.none )
+
+                _ ->
+                    ( model, Effect.none )
 
 
 
@@ -213,7 +334,7 @@ update msg model =
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
-    Sub.none
+    fromBackend decodeProgress
 
 
 
@@ -240,63 +361,41 @@ view model =
                         Html.text "Failed to find links"
 
             Nothing ->
-                Html.ul []
-                    (model.messages
-                        |> Dict.toList
-                        |> List.sortBy
-                            (\( ( href, index ), maybeMessages ) ->
-                                index
-                            )
-                        |> List.map
-                            (\( ( href, index ), maybeMessages ) ->
-                                case maybeMessages of
-                                    Just messages ->
-                                        Html.li []
-                                            [ Html.div [] [ Html.text href ]
-                                            , Html.ul []
-                                                (messages
-                                                    |> List.map
-                                                        (\message ->
-                                                            Html.li []
-                                                                [ Html.div []
-                                                                    [ Html.strong [] [ Html.text "From: " ]
-                                                                    , Html.text message.author
-                                                                    ]
-                                                                , Html.div []
-                                                                    [ Html.strong [] [ Html.text "Subject: " ]
-                                                                    , Html.text message.subject
-                                                                    ]
-                                                                , Html.div []
-                                                                    [ Html.strong [] [ Html.text "Date: " ]
-                                                                    , Html.node "locale-time"
-                                                                        [ Html.Attributes.attribute "datetime" (Iso8601.fromTime message.date)
-                                                                        , Html.Attributes.property "options"
-                                                                            (Json.Encode.object
-                                                                                [ ( "dateStyle", Json.Encode.string "short" ) ]
-                                                                            )
-                                                                        ]
-                                                                        []
-                                                                    , Html.node "relative-time"
-                                                                        [ Html.Attributes.attribute "datetime" (Iso8601.fromTime message.date)
-                                                                        , Html.Attributes.attribute "threshold" "P100Y"
-                                                                        ]
-                                                                        []
-                                                                    ]
-                                                                , Html.div []
-                                                                    [ Html.strong [] [ Html.text "Content: " ]
-                                                                    , Html.pre [] [ Html.text (message.content |> String.slice 0 100) ]
-                                                                    ]
-                                                                ]
-                                                        )
-                                                )
-                                            ]
-
-                                    Nothing ->
-                                        Html.li [] [ Html.text href ]
-                            )
-                    )
+                model.files
+                    |> Dict.toList
+                    |> List.map
+                        (\( href, status ) ->
+                            Html.li []
+                                [ Html.div [] [ Html.text href ]
+                                , renderStatus status
+                                ]
+                        )
+                    |> (\items -> Html.ul [] items)
         ]
     }
+
+
+renderStatus : FileStatus -> Html msg
+renderStatus s =
+    case s.state of
+        Queued ->
+            Html.text "Queued"
+
+        Fetching ->
+            Html.text "Fetching…"
+
+        Parsing ->
+            Html.text "Parsing…"
+
+        Storing ->
+            Html.div []
+                [ Html.text ("Storing " ++ String.fromInt s.inserted ++ "/" ++ String.fromInt s.total) ]
+
+        Done ->
+            Html.text "Done"
+
+        Error e ->
+            Html.text ("Error: " ++ e)
 
 
 errorToHtml :
@@ -320,3 +419,65 @@ errorToHtml src deadEnds =
         src
         deadEnds
         |> Html.pre []
+
+
+
+-- ENCODERS/DECODERS
+
+
+encodeMessage : String -> Message.Parser.Message -> Json.Encode.Value
+encodeMessage monthHref msg =
+    Json.Encode.object
+        [ ( "id", Json.Encode.string msg.messageId )
+        , ( "subject", Json.Encode.string msg.subject )
+        , ( "fromAddr", Json.Encode.string msg.author )
+        , ( "dateIso", Json.Encode.string (Iso8601.fromTime msg.date) )
+        , ( "inReplyTo", maybeString msg.inReplyTo )
+        , ( "references", maybeRefs msg.references )
+        , ( "content", Json.Encode.string msg.content )
+        , ( "monthFile", Json.Encode.string monthHref )
+        ]
+
+
+maybeString : Maybe String -> Json.Encode.Value
+maybeString m =
+    case m of
+        Just s ->
+            Json.Encode.string s
+
+        Nothing ->
+            Json.Encode.null
+
+
+maybeRefs : Maybe String -> Json.Encode.Value
+maybeRefs m =
+    case m of
+        Just s ->
+            Json.Encode.list Json.Encode.string
+                (s
+                    |> String.split " "
+                    |> List.filter (\x -> x /= "")
+                )
+
+        Nothing ->
+            Json.Encode.null
+
+
+progressDecoder : Json.Decode.Decoder ProgressMsg
+progressDecoder =
+    Json.Decode.map5 ProgressMsg
+        (Json.Decode.field "type" Json.Decode.string)
+        (Json.Decode.field "file" Json.Decode.string)
+        (Json.Decode.maybe (Json.Decode.field "inserted" Json.Decode.int))
+        (Json.Decode.maybe (Json.Decode.field "total" Json.Decode.int))
+        (Json.Decode.maybe (Json.Decode.field "error" Json.Decode.string))
+
+
+decodeProgress : Json.Decode.Value -> Msg
+decodeProgress val =
+    case Json.Decode.decodeValue progressDecoder val of
+        Ok p ->
+            BackendProgress p
+
+        Err _ ->
+            NoOp
