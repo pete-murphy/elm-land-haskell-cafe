@@ -1,4 +1,5 @@
 import "@github/relative-time-element"
+import "./main.css"
 
 // This returns the flags passed into your Elm application
 export const flags = async ({ env } : ElmLand.FlagsArgs) => {

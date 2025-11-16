@@ -199,11 +199,9 @@ update msg model =
                     ( { model
                         | files =
                             links
-                                |> List.take 4
                                 |> List.foldl (\href acc -> Dict.insert href { state = Queued, total = 0, inserted = 0 } acc) Dict.empty
                       }
                     , links
-                        |> List.take 4
                         |> List.indexedMap
                             (\index href ->
                                 Effect.sendCmd
@@ -388,14 +386,56 @@ renderStatus s =
             Html.text "Parsing…"
 
         Storing ->
-            Html.div []
-                [ Html.text ("Storing " ++ String.fromInt s.inserted ++ "/" ++ String.fromInt s.total) ]
+            Html.div
+                [ Html.Attributes.style "display" "flex"
+                , Html.Attributes.style "align-items" "center"
+                , Html.Attributes.style "gap" "8px"
+                ]
+                [ progressBar s.inserted s.total
+                , let
+                    pct =
+                        if s.total <= 0 then
+                            0
+
+                        else
+                            round ((toFloat s.inserted / toFloat s.total) * 100)
+                  in
+                  Html.text
+                    (String.fromInt s.inserted
+                        ++ "/"
+                        ++ String.fromInt s.total
+                        ++ " ("
+                        ++ String.fromInt pct
+                        ++ "%)"
+                    )
+                ]
 
         Done ->
-            Html.text "Done"
+            Html.div
+                [ Html.Attributes.style "display" "flex"
+                , Html.Attributes.style "align-items" "center"
+                , Html.Attributes.style "gap" "8px"
+                ]
+                [ progressBar 1 1
+                , Html.text "Done"
+                ]
 
         Error e ->
             Html.text ("Error: " ++ e)
+
+
+progressBar : Int -> Int -> Html msg
+progressBar inserted total =
+    let
+        maxVal =
+            max 1 total
+    in
+    Html.node "progress"
+        [ Html.Attributes.attribute "value" (String.fromInt inserted)
+        , Html.Attributes.attribute "max" (String.fromInt maxVal)
+        , Html.Attributes.style "width" "480px"
+        ]
+        []
 
 
 errorToHtml :
