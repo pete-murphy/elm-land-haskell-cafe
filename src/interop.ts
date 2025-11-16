@@ -237,6 +237,67 @@ export function computePath(parentPath: string | null, id: string): string {
 }
 
 // -----------------------------------------------------------------------------
+// Debug queries (logged after each insert chunk)
+// -----------------------------------------------------------------------------
+async function logDebugQueries(): Promise<void> {
+  const pg = getPGlite()
+  try {
+    const total = await pg.query(`SELECT COUNT(*)::int AS c FROM messages;`)
+    const roots = await pg.query(`SELECT COUNT(*)::int AS c FROM messages WHERE in_reply_to IS NULL;`)
+    const topSenders = await pg.query(`
+      SELECT from_addr, COUNT(*)::int AS c
+      FROM messages
+      GROUP BY from_addr
+      ORDER BY c DESC
+      LIMIT 5;
+    `)
+    const largestThreads = await pg.query(`
+      SELECT r.id AS root_id, COUNT(c.id)::int AS size
+      FROM messages r
+      JOIN messages c ON c.path <@ r.path
+      WHERE r.in_reply_to IS NULL
+      GROUP BY r.id
+      ORDER BY size DESC
+      LIMIT 5;
+    `)
+    const mostReplied = await pg.query(`
+      SELECT p.id, p.subject, COUNT(c.id)::int AS replies
+      FROM messages p
+      JOIN messages c ON c.in_reply_to = p.id
+      GROUP BY p.id, p.subject
+      ORDER BY replies DESC
+      LIMIT 5;
+    `)
+    const activeMonths = await pg.query(`
+      SELECT month_file, COUNT(*)::int AS c
+      FROM messages
+      GROUP BY month_file
+      ORDER BY c DESC
+      LIMIT 5;
+    `)
+    const sampleSearch = await pg.query(`
+      WITH q AS (SELECT plainto_tsquery('english', $1) AS tsq)
+      SELECT m.id, m.subject
+      FROM messages m, q
+      WHERE m.search @@ q.tsq
+      ORDER BY m.date DESC
+      LIMIT 5;
+    `, ['release'])
+    console.log('[DB] Totals:', {
+      total: (total.rows as any[])[0]?.c ?? 0,
+      roots: (roots.rows as any[])[0]?.c ?? 0
+    })
+    console.log('[DB] Top senders:', topSenders.rows)
+    console.log('[DB] Largest threads:', largestThreads.rows)
+    console.log('[DB] Most replied-to:', mostReplied.rows)
+    console.log('[DB] Most active months:', activeMonths.rows)
+    console.log('[DB] Sample search "release":', sampleSearch.rows)
+  } catch (e) {
+    console.warn('[DB] debug queries failed:', e)
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Single-writer queue and batched upsert
 // -----------------------------------------------------------------------------
 
@@ -338,6 +399,8 @@ async function upsertChunk(chunk: UpsertMessageItem[]): Promise<number> {
       search = EXCLUDED.search;
   `
   await pg.query(sql, values)
+  // Log insights after each chunk upsert
+  void logDebugQueries()
   return chunk.length
 }
 
