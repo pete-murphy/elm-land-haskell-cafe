@@ -6,6 +6,8 @@ import Html exposing (Html)
 import Html.Attributes
 import Html.Parser
 import Http
+import Iso8601
+import Json.Encode
 import Message.Parser
 import Page exposing (Page)
 import Parser
@@ -30,7 +32,7 @@ page shared route =
 
 
 type alias Model =
-    { messages : Dict String (Maybe (List Message.Parser.Message))
+    { messages : Dict ( String, Int ) (Maybe (List Message.Parser.Message))
     , problem : Maybe Problem
     }
 
@@ -134,7 +136,7 @@ findLinksMatching f parserDocument =
 
 type Msg
     = ServerRespondedWithIndexPage (Result Problem (List String))
-    | ServerRespondedWithTextFile { href : String } (Result Problem (List Message.Parser.Message))
+    | ServerRespondedWithTextFile { href : String, index : Int } (Result Problem (List Message.Parser.Message))
     | NoOp
 
 
@@ -160,16 +162,16 @@ update msg model =
                     ( { model
                         | messages =
                             links
-                                |> List.map (\link -> ( link, Nothing ))
+                                |> List.indexedMap (\index href -> ( ( href, index ), Nothing ))
                                 |> Dict.fromList
                       }
                     , links
                         |> List.take 4
-                        |> List.map
-                            (\link ->
+                        |> List.indexedMap
+                            (\index href ->
                                 Effect.sendCmd
                                     (Http.get
-                                        { url = "/haskell-cafe/" ++ link
+                                        { url = "/haskell-cafe/" ++ href
                                         , expect =
                                             Http.expectString
                                                 (Result.mapError HttpError
@@ -178,7 +180,7 @@ update msg model =
                                                             Message.Parser.run text
                                                                 |> Result.mapError (MessageParseError text)
                                                         )
-                                                    >> ServerRespondedWithTextFile { href = link }
+                                                    >> ServerRespondedWithTextFile { href = href, index = index }
                                                 )
                                         }
                                     )
@@ -189,10 +191,10 @@ update msg model =
                 Result.Err problem ->
                     ( { model | problem = Just problem }, Effect.none )
 
-        ServerRespondedWithTextFile { href } response ->
+        ServerRespondedWithTextFile { href, index } response ->
             case response of
                 Result.Ok messages ->
-                    ( { model | messages = Dict.insert href (Just messages) model.messages }
+                    ( { model | messages = Dict.insert ( href, index ) (Just messages) model.messages }
                     , Effect.none
                     )
 
@@ -241,12 +243,16 @@ view model =
                 Html.ul []
                     (model.messages
                         |> Dict.toList
+                        |> List.sortBy
+                            (\( ( href, index ), maybeMessages ) ->
+                                index
+                            )
                         |> List.map
-                            (\( link, maybeMessages ) ->
+                            (\( ( href, index ), maybeMessages ) ->
                                 case maybeMessages of
                                     Just messages ->
                                         Html.li []
-                                            [ Html.div [] [ Html.text link ]
+                                            [ Html.div [] [ Html.text href ]
                                             , Html.ul []
                                                 (messages
                                                     |> List.map
@@ -262,11 +268,23 @@ view model =
                                                                     ]
                                                                 , Html.div []
                                                                     [ Html.strong [] [ Html.text "Date: " ]
-                                                                    , Html.text (Debug.toString message.date)
+                                                                    , Html.node "locale-time"
+                                                                        [ Html.Attributes.attribute "datetime" (Iso8601.fromTime message.date)
+                                                                        , Html.Attributes.property "options"
+                                                                            (Json.Encode.object
+                                                                                [ ( "dateStyle", Json.Encode.string "short" ) ]
+                                                                            )
+                                                                        ]
+                                                                        []
+                                                                    , Html.node "relative-time"
+                                                                        [ Html.Attributes.attribute "datetime" (Iso8601.fromTime message.date)
+                                                                        , Html.Attributes.attribute "threshold" "P100Y"
+                                                                        ]
+                                                                        []
                                                                     ]
                                                                 , Html.div []
                                                                     [ Html.strong [] [ Html.text "Content: " ]
-                                                                    , Html.pre [] [ Html.text message.content ]
+                                                                    , Html.pre [] [ Html.text (message.content |> String.slice 0 100) ]
                                                                     ]
                                                                 ]
                                                         )
@@ -274,7 +292,7 @@ view model =
                                             ]
 
                                     Nothing ->
-                                        Html.li [] [ Html.text link ]
+                                        Html.li [] [ Html.text href ]
                             )
                     )
         ]

@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@github/relative-time-element": "^4.5.0"
+  }
+}
