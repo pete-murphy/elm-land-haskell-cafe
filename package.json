@@ -1,6 +1,11 @@
 {
+  "postinstall": "patch-package",
   "dependencies": {
     "@electric-sql/pglite": "^0.3.14",
     "@github/relative-time-element": "^4.5.0"
+  },
+  "devDependencies": {
+    "elm-land": "^0.20.1",
+    "patch-package": "^8.0.1"
   }
 }
