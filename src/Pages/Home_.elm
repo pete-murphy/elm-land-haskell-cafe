@@ -6,6 +6,7 @@ import Html exposing (Html)
 import Html.Attributes
 import Html.Parser
 import Http
+import Message.Parser
 import Page exposing (Page)
 import Parser
 import Parser.Error
@@ -29,7 +30,7 @@ page shared route =
 
 
 type alias Model =
-    { links : Dict String (Maybe Html.Parser.Document)
+    { messages : Dict String (Maybe (List Message.Parser.Message))
     , problem : Maybe Problem
     }
 
@@ -37,12 +38,13 @@ type alias Model =
 type Problem
     = HttpError Http.Error
     | HtmlParseError String (List Parser.DeadEnd)
+    | MessageParseError String (List Parser.DeadEnd)
     | FailedToFindLinks
 
 
 init : () -> ( Model, Effect Msg )
 init () =
-    ( { links = Dict.empty, problem = Nothing }
+    ( { messages = Dict.empty, problem = Nothing }
     , Effect.sendCmd
         (Http.get
             { url = "/haskell-cafe/index.html"
@@ -58,17 +60,21 @@ init () =
                                             |> findLinksMatching
                                                 (\{ attributes, children } ->
                                                     case children of
-                                                        [ Html.Parser.Text "[ Date ]" ] ->
-                                                            attributes
-                                                                |> List.filterMap
-                                                                    (\( name, value ) ->
-                                                                        if name == "href" then
-                                                                            Just value
+                                                        [ Html.Parser.Text text ] ->
+                                                            if String.startsWith "[ Text " text then
+                                                                attributes
+                                                                    |> List.filterMap
+                                                                        (\( name, value ) ->
+                                                                            if name == "href" then
+                                                                                Just value
 
-                                                                        else
-                                                                            Nothing
-                                                                    )
-                                                                |> List.head
+                                                                            else
+                                                                                Nothing
+                                                                        )
+                                                                    |> List.head
+
+                                                            else
+                                                                Nothing
 
                                                         _ ->
                                                             Nothing
@@ -128,7 +134,7 @@ findLinksMatching f parserDocument =
 
 type Msg
     = ServerRespondedWithIndexPage (Result Problem (List String))
-    | ServerRespondedWithPostsByMonth { href : String } (Result Problem Html.Parser.Document)
+    | ServerRespondedWithTextFile { href : String } (Result Problem (List Message.Parser.Message))
     | NoOp
 
 
@@ -152,7 +158,7 @@ update msg model =
             case response of
                 Result.Ok links ->
                     ( { model
-                        | links =
+                        | messages =
                             links
                                 |> List.map (\link -> ( link, Nothing ))
                                 |> Dict.fromList
@@ -167,8 +173,12 @@ update msg model =
                                         , expect =
                                             Http.expectString
                                                 (Result.mapError HttpError
-                                                    >> Result.andThen parseHtml4Document
-                                                    >> ServerRespondedWithPostsByMonth { href = link }
+                                                    >> Result.andThen
+                                                        (\text ->
+                                                            Message.Parser.run text
+                                                                |> Result.mapError (MessageParseError text)
+                                                        )
+                                                    >> ServerRespondedWithTextFile { href = link }
                                                 )
                                         }
                                     )
@@ -179,10 +189,10 @@ update msg model =
                 Result.Err problem ->
                     ( { model | problem = Just problem }, Effect.none )
 
-        ServerRespondedWithPostsByMonth { href } response ->
+        ServerRespondedWithTextFile { href } response ->
             case response of
-                Result.Ok parserDocument ->
-                    ( { model | links = Dict.insert href (Just parserDocument) model.links }
+                Result.Ok messages ->
+                    ( { model | messages = Dict.insert href (Just messages) model.messages }
                     , Effect.none
                     )
 
@@ -221,20 +231,46 @@ view model =
                     HtmlParseError src deadEnds ->
                         errorToHtml src deadEnds
 
+                    MessageParseError src deadEnds ->
+                        errorToHtml src deadEnds
+
                     FailedToFindLinks ->
                         Html.text "Failed to find links"
 
             Nothing ->
                 Html.ul []
-                    (model.links
+                    (model.messages
                         |> Dict.toList
                         |> List.map
-                            (\( link, maybeDocument ) ->
-                                case maybeDocument of
-                                    Just parserDocument ->
+                            (\( link, maybeMessages ) ->
+                                case maybeMessages of
+                                    Just messages ->
                                         Html.li []
                                             [ Html.div [] [ Html.text link ]
-                                            , Html.Parser.nodeToHtml parserDocument.root
+                                            , Html.ul []
+                                                (messages
+                                                    |> List.map
+                                                        (\message ->
+                                                            Html.li []
+                                                                [ Html.div []
+                                                                    [ Html.strong [] [ Html.text "From: " ]
+                                                                    , Html.text message.author
+                                                                    ]
+                                                                , Html.div []
+                                                                    [ Html.strong [] [ Html.text "Subject: " ]
+                                                                    , Html.text message.subject
+                                                                    ]
+                                                                , Html.div []
+                                                                    [ Html.strong [] [ Html.text "Date: " ]
+                                                                    , Html.text (Debug.toString message.date)
+                                                                    ]
+                                                                , Html.div []
+                                                                    [ Html.strong [] [ Html.text "Content: " ]
+                                                                    , Html.pre [] [ Html.text message.content ]
+                                                                    ]
+                                                                ]
+                                                        )
+                                                )
                                             ]
 
                                     Nothing ->
