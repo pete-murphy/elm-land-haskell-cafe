@@ -128,10 +128,12 @@ export function getPGlite(): import('@electric-sql/pglite').PGlite {
   return pgInstance
 }
 
-const EXPECTED_SCHEMA_VERSION = 1
+const EXPECTED_SCHEMA_VERSION = 2
 
 async function handleInboundMessage(app: ElmApp, msg: unknown): Promise<void> {
   try {
+    // Ensure PGlite is ready before handling any messages that touch the DB
+    await ensureDatabaseInitialized()
     const t = (msg as any)?.type as string | undefined
     switch (t) {
       case 'upsertMessages': {
@@ -169,6 +171,9 @@ async function handleInboundMessage(app: ElmApp, msg: unknown): Promise<void> {
 
 async function ensureSchema(): Promise<void> {
   const pg = getPGlite()
+  // Ensure required extensions are available
+  await pg.query(`CREATE EXTENSION IF NOT EXISTS ltree;`)
+  await pg.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`)
   // Create meta table if it doesn't exist
   await pg.query(`
     CREATE TABLE IF NOT EXISTS meta (
@@ -200,7 +205,7 @@ async function ensureSchema(): Promise<void> {
       from_addr TEXT,
       date TIMESTAMP,
       in_reply_to TEXT,
-      references TEXT[],
+      refs TEXT[],
       content TEXT,
       month_file TEXT,
       path LTREE NOT NULL,
@@ -319,20 +324,18 @@ async function upsertChunk(chunk: UpsertMessageItem[]): Promise<number> {
   }
 
   const sql = `
-    BEGIN;
-    INSERT INTO messages (id, subject, from_addr, date, in_reply_to, references, content, month_file, path, search)
+    INSERT INTO messages (id, subject, from_addr, date, in_reply_to, refs, content, month_file, path, search)
     VALUES ${rowsSql.join(',\n')}
     ON CONFLICT (id) DO UPDATE SET
       subject = EXCLUDED.subject,
       from_addr = EXCLUDED.from_addr,
       date = EXCLUDED.date,
       in_reply_to = EXCLUDED.in_reply_to,
-      references = EXCLUDED.references,
+      refs = EXCLUDED.refs,
       content = EXCLUDED.content,
       month_file = EXCLUDED.month_file,
       path = EXCLUDED.path,
       search = EXCLUDED.search;
-    COMMIT;
   `
   await pg.query(sql, values)
   return chunk.length
