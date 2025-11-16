@@ -2,14 +2,14 @@ import "@github/relative-time-element"
 import "./main.css"
 
 // This returns the flags passed into your Elm application
-export const flags = async ({ env } : ElmLand.FlagsArgs) => {
+export const flags = async ({ env }: ElmLand.FlagsArgs) => {
+  await ensureDatabaseInitialized()
   return {}
 }
 
 // This function is called after your Elm app starts
-export const onReady = ({ app, env } : ElmLand.OnReadyArgs) => {
+export const onReady = ({ app, env }: ElmLand.OnReadyArgs) => {
   console.log('Elm is ready', app)
-  void ensureDatabaseInitialized()
   // Wire ports if present
   if (app.ports?.toBackend?.subscribe) {
     app.ports.toBackend.subscribe((msg: unknown) => {
@@ -78,15 +78,15 @@ type UpsertMessageItem = {
 }
 
 type Inbound =
-  | { type: 'upsertMessages', file: string, items: UpsertMessageItem[] }
+  | { type: 'upsertMessages', file: string, index: number, items: UpsertMessageItem[] }
   | { type: 'getMessageById', id: string }
   | { type: 'getThread', rootId: string }
   | { type: 'searchMessages', query: string, limit?: number }
 
 type Outbound =
-  | { type: 'progress', file: string, inserted: number, total: number }
-  | { type: 'done', file: string, insertedTotal: number }
-  | { type: 'error', file: string, error: string }
+  | { type: 'progress', file: string, index: number, inserted: number, total: number }
+  | { type: 'done', file: string, index: number, insertedTotal: number }
+  | { type: 'error', file: string, index: number, error: string }
   | { type: 'backpressure', level: number }
   | { type: 'message', data: any }
   | { type: 'thread', data: any[] }
@@ -139,7 +139,7 @@ async function handleInboundMessage(app: ElmApp, msg: unknown): Promise<void> {
     switch (t) {
       case 'upsertMessages': {
         const m = msg as Extract<Inbound, { type: 'upsertMessages' }>
-        await enqueueUpsert(app, m.file, m.items)
+        await enqueueUpsert(app, m.file, m.index, m.items)
         return
       }
       case 'getMessageById': {
@@ -166,7 +166,7 @@ async function handleInboundMessage(app: ElmApp, msg: unknown): Promise<void> {
     }
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e)
-    sendToElm(app, { type: 'error', file: 'unknown', error })
+    sendToElm(app, { type: 'error', file: 'unknown', index: -1, error })
   }
 }
 
@@ -328,7 +328,7 @@ async function processQueue(): Promise<void> {
   }
 }
 
-async function enqueueUpsert(app: ElmApp, file: string, items: UpsertMessageItem[]): Promise<void> {
+async function enqueueUpsert(app: ElmApp, file: string, index: number, items: UpsertMessageItem[]): Promise<void> {
   const total = items.length
   let insertedTotal = 0
   const CHUNK_SIZE = 500
@@ -343,9 +343,9 @@ async function enqueueUpsert(app: ElmApp, file: string, items: UpsertMessageItem
     await enqueue(async () => {
       const inserted = await upsertChunk(chunk)
       insertedTotal += inserted
-      sendToElm(app, { type: 'progress', file, inserted: insertedTotal, total })
+      sendToElm(app, { type: 'progress', file, index, inserted: insertedTotal, total })
       if (insertedTotal >= total) {
-        sendToElm(app, { type: 'done', file, insertedTotal })
+        sendToElm(app, { type: 'done', file, index, insertedTotal })
       }
     }, onBackpressure)
   }

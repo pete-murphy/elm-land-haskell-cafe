@@ -28,6 +28,11 @@ port toBackend : Json.Encode.Value -> Cmd msg
 port fromBackend : (Json.Decode.Value -> msg) -> Sub msg
 
 
+debugParses : Bool
+debugParses =
+    True
+
+
 page : Shared.Model -> Route () -> Page Model Msg
 page shared route =
     Page.new
@@ -43,7 +48,7 @@ page shared route =
 
 
 type alias Model =
-    { files : Dict String FileStatus
+    { files : Dict ( String, Int ) FileStatus
     , problem : Maybe Problem
     }
 
@@ -171,6 +176,7 @@ type Msg
 type alias ProgressMsg =
     { kind : String
     , file : String
+    , index : Int
     , inserted : Maybe Int
     , total : Maybe Int
     , error : Maybe String
@@ -199,7 +205,8 @@ update msg model =
                     ( { model
                         | files =
                             links
-                                |> List.foldl (\href acc -> Dict.insert href { state = Queued, total = 0, inserted = 0 } acc) Dict.empty
+                                |> List.indexedMap (\index href -> ( href, index ))
+                                |> List.foldl (\( href, index ) acc -> Dict.insert ( href, index ) { state = Queued, total = 0, inserted = 0 } acc) Dict.empty
                       }
                     , links
                         |> List.indexedMap
@@ -212,7 +219,15 @@ update msg model =
                                                 (Result.mapError HttpError
                                                     >> Result.andThen
                                                         (\text ->
-                                                            Message.Parser.run text
+                                                            let
+                                                                parse =
+                                                                    if debugParses then
+                                                                        Message.Parser.runWithDebug
+
+                                                                    else
+                                                                        Message.Parser.run
+                                                            in
+                                                            parse text
                                                                 |> Result.mapError (MessageParseError text)
                                                         )
                                                     >> ServerRespondedWithTextFile { href = href, index = index }
@@ -237,12 +252,13 @@ update msg model =
                             Json.Encode.object
                                 [ ( "type", Json.Encode.string "upsertMessages" )
                                 , ( "file", Json.Encode.string href )
+                                , ( "index", Json.Encode.int index )
                                 , ( "items", Json.Encode.list identity (List.map (encodeMessage href) messages) )
                                 ]
                     in
                     ( { model
                         | files =
-                            Dict.update href
+                            Dict.update ( href, index )
                                 (\_ -> Just { state = Storing, total = total, inserted = 0 })
                                 model.files
                       }
@@ -252,7 +268,7 @@ update msg model =
                 Result.Err problem ->
                     ( { model
                         | files =
-                            Dict.update href
+                            Dict.update ( href, index )
                                 (\_ -> Just { state = Error "parse", total = 0, inserted = 0 })
                                 model.files
                         , problem = Just problem
@@ -277,7 +293,7 @@ update msg model =
                     in
                     ( { model
                         | files =
-                            Dict.update pm.file
+                            Dict.update ( pm.file, pm.index )
                                 (\maybe ->
                                     case maybe of
                                         Just s ->
@@ -294,7 +310,7 @@ update msg model =
                 "done" ->
                     ( { model
                         | files =
-                            Dict.update pm.file
+                            Dict.update ( pm.file, pm.index )
                                 (\maybe ->
                                     case maybe of
                                         Just s ->
@@ -311,7 +327,7 @@ update msg model =
                 "error" ->
                     ( { model
                         | files =
-                            Dict.update pm.file
+                            Dict.update ( pm.file, pm.index )
                                 (\_ -> Just { state = Error (Maybe.withDefault "unknown" pm.error), inserted = 0, total = 0 })
                                 model.files
                       }
@@ -361,8 +377,9 @@ view model =
             Nothing ->
                 model.files
                     |> Dict.toList
+                    |> List.sortBy (\( ( _, index ), _ ) -> index)
                     |> List.map
-                        (\( href, status ) ->
+                        (\( ( href, _ ), status ) ->
                             Html.li []
                                 [ Html.div [] [ Html.text href ]
                                 , renderStatus status
@@ -505,9 +522,10 @@ maybeRefs m =
 
 progressDecoder : Json.Decode.Decoder ProgressMsg
 progressDecoder =
-    Json.Decode.map5 ProgressMsg
+    Json.Decode.map6 ProgressMsg
         (Json.Decode.field "type" Json.Decode.string)
         (Json.Decode.field "file" Json.Decode.string)
+        (Json.Decode.field "index" Json.Decode.int)
         (Json.Decode.maybe (Json.Decode.field "inserted" Json.Decode.int))
         (Json.Decode.maybe (Json.Decode.field "total" Json.Decode.int))
         (Json.Decode.maybe (Json.Decode.field "error" Json.Decode.string))

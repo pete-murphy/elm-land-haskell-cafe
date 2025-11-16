@@ -71,6 +71,97 @@ test =
                         )
                     |> Result.map (\expectation -> expectation ())
                     |> Result.withDefault (Expect.fail "Parser returned error")
+        , Test.describe "edge cases" <|
+            [ Test.test "body line starting with 'From ' is not a new message" <|
+                \_ ->
+                    let
+                        input =
+                            String.join "\n"
+                                [ "From user@example.com Sun Aug  3 14:14:10 2025"
+                                , "From: user@example.com (Example User)"
+                                , "Date: Sun, 3 Aug 2025 10:14:10 -0400"
+                                , "Subject: From in body"
+                                , "Message-ID: <id-1@example.com>"
+                                , ""
+                                , "Regular line"
+                                , "From the team"
+                                , "End."
+                                ]
+                    in
+                    case Message.Parser.run input of
+                        Ok msgs ->
+                            case msgs of
+                                [ one ] ->
+                                    Expect.all
+                                        [ \_ -> Expect.equal "From in body" one.subject
+                                        , \_ -> Expect.equal True (String.contains "From the team" one.content)
+                                        ]
+                                        |> (\f -> f ())
+
+                                _ ->
+                                    Expect.fail "Expected exactly one message"
+
+                        Err _ ->
+                            Expect.fail "Should parse"
+            , Test.test "nested parentheses in From display name" <|
+                \_ ->
+                    let
+                        input =
+                            String.join "\n"
+                                [ "From user@example.com Sun Aug  3 14:14:10 2025"
+                                , "From: user@example.com (User (Team) Name)"
+                                , "Date: Sun, 3 Aug 2025 10:14:10 -0400"
+                                , "Subject: Nested parens"
+                                , "Message-ID: <id-2@example.com>"
+                                , ""
+                                , "Hello"
+                                ]
+                    in
+                    Message.Parser.run input
+                        |> Result.map (\msgs -> List.length msgs)
+                        |> Expect.equal (Ok 1)
+            , Test.test "folded Subject header with continuation" <|
+                \_ ->
+                    let
+                        input =
+                            String.join "\n"
+                                [ "From user@example.com Sun Aug  3 14:14:10 2025"
+                                , "From: user@example.com (Example User)"
+                                , "Date: Sun, 3 Aug 2025 10:14:10 -0400"
+                                , "Subject: Line one"
+                                , " continuation"
+                                , "Message-ID: <id-3@example.com>"
+                                , ""
+                                , "Hi"
+                                ]
+                    in
+                    case Message.Parser.run input of
+                        Ok [ one ] ->
+                            Expect.equal "Line one continuation" one.subject
+
+                        Ok _ ->
+                            Expect.fail "Expected one message"
+
+                        Err _ ->
+                            Expect.fail "Should parse"
+            , Test.test "unicode in Subject header" <|
+                \_ ->
+                    let
+                        input =
+                            String.join "\n"
+                                [ "From user@example.com Sun Aug  3 14:14:10 2025"
+                                , "From: user@example.com (例 ユーザー)"
+                                , "Date: Sun, 3 Aug 2025 10:14:10 -0400"
+                                , "Subject: Hello 🌟世界"
+                                , "Message-ID: <id-4@example.com>"
+                                , ""
+                                , "Hi"
+                                ]
+                    in
+                    Message.Parser.run input
+                        |> Result.map (\msgs -> List.length msgs)
+                        |> Expect.equal (Ok 1)
+            ]
         ]
 
 
